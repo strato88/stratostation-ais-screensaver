@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIS Radar Screensaver</title>
+<style>
+@font-face{font-family:'Space Grotesk';font-weight:700;src:url('vendor/space-grotesk-700.woff2') format('woff2');font-display:swap}
+@font-face{font-family:'Space Grotesk';font-weight:400;src:url('vendor/space-grotesk-400.woff2') format('woff2');font-display:swap}
+@font-face{font-family:'JetBrains Mono';font-weight:400;src:url('vendor/jetbrains-mono-400.woff2') format('woff2');font-display:swap}
+
+:root{
+  --bg:#04060c;--ink:#e8f1f8;--dim:#7d8fa5;--cyan:#4fd8eb;
+  --green:#3ddc84;--red:#ff5d6c;--line:rgba(125,143,165,.18);
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --sans:'Space Grotesk',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
+  color:var(--ink);font-family:var(--sans);cursor:none;-webkit-font-smoothing:antialiased}
+.skyfull{position:relative;width:100vw;height:100vh}
+canvas#radar{position:absolute;inset:0;width:100%;height:100%;display:block}
+.vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 50%,transparent 55%,rgba(0,0,0,.6) 100%)}
+
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.5em;color:var(--cyan);
+  text-transform:uppercase;margin-bottom:8px}
+.subtitle{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.18em}
+
+.sky-bottom{position:absolute;left:0;right:0;bottom:0;padding:0 16px 3vh;text-align:center;
+  pointer-events:none;z-index:2}
+
+.sky-bl{position:absolute;left:0;bottom:0;pointer-events:none;z-index:2;
+  padding:clamp(40px,7vh,80px) clamp(70px,9vw,130px) clamp(24px,5vh,52px) clamp(16px,4vw,56px);
+  background:radial-gradient(ellipse 130% 120% at 0% 100%,rgba(4,6,12,.9) 42%,rgba(4,6,12,.6) 62%,transparent 82%)}
+.bignum{font-size:clamp(46px,6vw,84px);font-weight:700;line-height:1;color:var(--ink);
+  text-shadow:0 0 50px rgba(79,216,235,.4)}
+.bignum small{font-size:15px;color:var(--dim);font-family:var(--mono);letter-spacing:.2em}
+.skylist{margin-top:14px;font-family:var(--mono);font-size:11px;line-height:1.95;color:var(--dim);
+  max-height:52vh;overflow-y:hidden;scrollbar-width:none}
+.skylist::-webkit-scrollbar{display:none}
+.skylist .row{display:flex;justify-content:space-between;gap:16px}
+.skylist .row b{color:var(--cyan);font-weight:400;min-width:130px;text-align:left}
+
+.sky-br{position:absolute;right:clamp(16px,4vw,56px);bottom:clamp(24px,6vh,60px);
+  text-align:right;pointer-events:none;z-index:2;font-family:var(--mono);color:var(--dim)}
+.clock{font-size:clamp(28px,3.6vw,46px);color:var(--ink);letter-spacing:.06em}
+.date{font-size:11px;letter-spacing:.2em;margin-top:6px;text-transform:uppercase}
+.station{font-size:10px;letter-spacing:.2em;margin-top:14px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="skyfull">
+  <canvas id="radar"></canvas>
+  <div class="vignette"></div>
+  <div class="sky-bl">
+    <div class="bignum"><span id="sh-total">0</span> <small id="sh-label">SHIPS</small></div>
+    <div class="skylist" id="sh-list"></div>
+  </div>
+  <div class="sky-br">
+    <div class="clock"><span id="clk-h">--</span>:<span id="clk-m">--</span>:<span id="clk-s">--</span></div>
+    <div class="date" id="hud-date">—</div>
+    <div class="station" id="station-label"></div>
+  </div>
+  <div class="sky-bottom">
+    <div class="kicker" id="kicker-label"></div>
+    <div class="subtitle" id="feed-line">AIS · connecting…</div>
+  </div>
+</div>
+<script>
+/* =====================================================================
+   CONFIG — edit this block to adapt the radar to YOUR station
+   ===================================================================== */
+const CONFIG = {
+  lat: 38.8728,                 // station latitude  (decimal degrees)
+  lon: 1.4015,                  // station longitude (decimal degrees)
+  vRangeNm: 19,                 // visible half-axis, vertical   (NM)
+  hRangeNm: 13,                 // visible half-axis, horizontal (NM) — equal to vRangeNm for a circular radar
+  kicker: 'my station · ais 161.975 / 162.025 MHz',   // footer title line
+  stationLabel: 'CAP MARTINET · 38.8728N 1.4015E',    // bottom-right corner label
+  shipLabel: 'SHIPS',           // label next to the big counter
+  shipsUrl: 'api/ships',        // endpoint returning {ships:[...], connected, messages, last_msg_age}
+  coastUrl: 'coast.json',       // optional coastline overlay — set to '' or null to disable
+  refreshMs: 5000,              // data refresh interval (ms)
+  locale: 'en-GB',              // clock, date & number formatting locale (e.g. 'es-ES', 'en-US')
+  sweepMs: 3200,                // one full sweep revolution (ms)
+  rollMs: 9000,                 // "cash register" number roll duration (ms)
+  typeMs: 28                    // typewriter effect, ms per character
+};
+/* ===================================================================== */
+
+const rc = document.getElementById('radar'), rctx = rc.getContext('2d');
+const SLAT = CONFIG.lat, SLON = CONFIG.lon;
+const VRANGE = CONFIG.vRangeNm, HRANGE = CONFIG.hRangeNm;
+const RDPR = Math.min(devicePixelRatio, 2);
+let sweep = 0, blips = [], coast = [];
+
+document.getElementById('kicker-label').textContent = CONFIG.kicker;
+document.getElementById('station-label').textContent = CONFIG.stationLabel;
+document.getElementById('sh-label').textContent = CONFIG.shipLabel;
+
+const toXY = (lat, lon) => [
+  (lon - SLON) * Math.cos(SLAT*Math.PI/180) * 60,
+  (lat - SLAT) * 60
+];
+
+if (CONFIG.coastUrl){
+  fetch(CONFIG.coastUrl).then(r => r.json()).then(chains => {
+    coast = chains.map(ch => ch.map(([lon, lat]) => toXY(lat, lon)));
+  }).catch(() => {});
+}
+
+/* "cash register" effect: ease-out interpolation of the displayed number */
+function animateNum(el, value, fmt, dur){
+  dur = dur || CONFIG.rollMs;
+  if (!el) return;
+  if (el._animTarget === value){ return; }
+  el._animTarget = value;
+  const start = isNaN(parseFloat(el._animCurrent)) ? value : parseFloat(el._animCurrent);
+  const t0 = performance.now();
+  if (el._animId) cancelAnimationFrame(el._animId);
+  function step(now){
+    const k = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - k, 3);
+    const cur = start + (value - start) * e;
+    el._animCurrent = cur;
+    el.textContent = fmt(cur);
+    el._animId = k < 1 ? requestAnimationFrame(step) : null;
+  }
+  el._animId = requestAnimationFrame(step);
+}
+
+/* typewriter: only re-types from the point where the text differs */
+function typeText(el, str){
+  if (!el || el._typed === str) return;
+  const prev = el._typed || '';
+  el._typed = str;
+  let common = 0;
+  while (common < prev.length && common < str.length && prev[common] === str[common]) common++;
+  if (el._typeId) clearInterval(el._typeId);
+  let i = common;
+  el.textContent = str.slice(0, i) + (i < str.length ? '▌' : '');
+  el._typeId = setInterval(() => {
+    el.textContent = str.slice(0, ++i) + (i < str.length ? '▌' : '');
+    if (i >= str.length) clearInterval(el._typeId);
+  }, CONFIG.typeMs);
+}
+
+const shRows = {}; /* mmsi -> {el, name, sog, dst} */
+
+function renderList(){
+  const container = document.getElementById('sh-list');
+  const seen = new Set();
+  for (const b of blips){
+    seen.add(b.mmsi);
+    let row = shRows[b.mmsi];
+    if (!row){
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.innerHTML = '<b></b><span></span><span></span>';
+      container.appendChild(div);
+      const spans = div.querySelectorAll('span');
+      row = shRows[b.mmsi] = {el:div, name:div.querySelector('b'), sog:spans[0], dst:spans[1]};
+    }
+    typeText(row.name, b.name);
+    if (b.moving) animateNum(row.sog, b.sog, v => v.toFixed(1)+' kt');
+    else {
+      row.sog._animTarget = undefined;
+      row.sog._animCurrent = undefined;
+      row.sog.textContent = b.sog != null ? 'Moored' : '—';
+    }
+    animateNum(row.dst, b.d, v => v.toFixed(1)+' NM');
+  }
+  for (const m in shRows){
+    if (!seen.has(+m)){ shRows[m].el.remove(); delete shRows[m]; }
+  }
+  for (const b of blips) container.appendChild(shRows[b.mmsi].el); /* reorder: underway first */
+}
+
+function setShips(d){
+  blips = d.ships.map(s => {
+    const [x, y] = toXY(s.lat, s.lon);
+    const moving = (s.sog || 0) >= 0.5;
+    return {mmsi:s.mmsi, x, y, name:(s.name || String(s.mmsi)),
+            sog:s.sog, cog:s.cog, hdg:s.hdg, moving, d:Math.hypot(x, y),
+            trail:(s.trail || []).map(p => toXY(p[0], p[1]))};
+  }).sort((a, b) => (b.moving - a.moving) || (a.d - b.d));
+  animateNum(document.getElementById('sh-total'), blips.length, v => Math.round(v).toLocaleString(CONFIG.locale));
+  renderList();
+  const age = d.last_msg_age;
+  typeText(document.getElementById('feed-line'),
+    `AIS FEED ${d.connected ? 'LIVE' : 'RECONNECTING'} · ${d.messages.toLocaleString(CONFIG.locale)} MSG · LAST ${age == null ? '—' : age < 90 ? age + ' S' : Math.round(age/60) + ' MIN'}`);
+}
+
+function drawRadar(t){
+  const box = rc.parentElement.getBoundingClientRect();
+  const bw = Math.floor(box.width*RDPR), bh = Math.floor(box.height*RDPR);
+  if (!bw || !bh){ requestAnimationFrame(drawRadar); return; }
+  if (rc.width !== bw || rc.height !== bh){ rc.width = bw; rc.height = bh; }
+  const W = bw, H = bh, CX = W*.5, CY = H*.5;
+  const SCALE = Math.min(H*.5/VRANGE, W*.5/HRANGE);
+  const maxR = Math.hypot(CX, CY);
+  const px2 = b => [CX + b.x*SCALE, CY - b.y*SCALE];
+  const pxy = p => [CX + p[0]*SCALE, CY - p[1]*SCALE];
+  rctx.clearRect(0,0,W,H);
+
+  /* ---- optional coastline overlay ---- */
+  for (const ch of coast){
+    rctx.beginPath();
+    const [x0, y0] = pxy(ch[0]);
+    rctx.moveTo(x0, y0);
+    for (let i = 1; i < ch.length; i++){
+      const [x, y] = pxy(ch[i]);
+      rctx.lineTo(x, y);
+    }
+    const closed = Math.hypot(ch[0][0]-ch[ch.length-1][0], ch[0][1]-ch[ch.length-1][1]) < .2;
+    if (closed){
+      rctx.closePath();
+      rctx.fillStyle = 'rgba(79,216,235,.045)';
+      rctx.fill();
+    }
+    rctx.strokeStyle = 'rgba(79,216,235,.4)';
+    rctx.lineWidth = 1;
+    rctx.stroke();
+  }
+
+  /* ---- range rings ---- */
+  rctx.lineWidth = 1;
+  rctx.font = `${10*RDPR}px JetBrains Mono, monospace`;
+  for (let nm = 5; nm*SCALE < maxR + 40*RDPR; nm += 5){
+    const major = nm % 10 === 0;
+    rctx.strokeStyle = major ? 'rgba(79,216,235,.12)' : 'rgba(79,216,235,.05)';
+    rctx.beginPath(); rctx.arc(CX, CY, nm*SCALE, 0, 7); rctx.stroke();
+    if (major){
+      rctx.fillStyle = 'rgba(95,122,134,.65)';
+      rctx.textAlign = 'left';
+      rctx.fillText(nm+' NM', CX + 5*RDPR, CY - nm*SCALE + 14*RDPR);
+    }
+  }
+  rctx.textAlign = 'center';
+  for (let i = 0; i < 12; i++){
+    const a = i*Math.PI/6;
+    rctx.strokeStyle = 'rgba(79,216,235,.05)';
+    rctx.beginPath(); rctx.moveTo(CX, CY);
+    rctx.lineTo(CX + maxR*Math.sin(a), CY - maxR*Math.cos(a)); rctx.stroke();
+  }
+
+  /* ---- sweep ---- */
+  sweep = (t/CONFIG.sweepMs) % (Math.PI*2);
+  if (rctx.createConicGradient){
+    const g = rctx.createConicGradient(sweep - Math.PI/2, CX, CY);
+    g.addColorStop(0, 'rgba(79,216,235,.20)');
+    g.addColorStop(.10, 'rgba(79,216,235,0)');
+    g.addColorStop(1, 'rgba(79,216,235,0)');
+    rctx.fillStyle = g;
+    rctx.beginPath(); rctx.moveTo(CX, CY); rctx.arc(CX, CY, maxR, 0, 7); rctx.fill();
+  }
+  rctx.strokeStyle = 'rgba(79,216,235,.65)'; rctx.lineWidth = 1.5;
+  rctx.beginPath(); rctx.moveTo(CX, CY);
+  rctx.lineTo(CX + maxR*Math.sin(sweep), CY - maxR*Math.cos(sweep)); rctx.stroke();
+
+  /* ---- station marker ---- */
+  rctx.fillStyle = '#4fd8eb';
+  rctx.beginPath(); rctx.arc(CX, CY, 3.5*RDPR, 0, 7); rctx.fill();
+  rctx.strokeStyle = 'rgba(79,216,235,.5)';
+  rctx.beginPath(); rctx.arc(CX, CY, 8*RDPR, 0, 7); rctx.stroke();
+
+  /* ---- position trails (server-provided, survive reloads) ---- */
+  for (const b of blips){
+    const tr = b.trail;
+    for (let i = 1; i < tr.length; i++){
+      const [x1,y1] = pxy(tr[i-1]), [x2,y2] = pxy(tr[i]);
+      rctx.strokeStyle = `rgba(79,216,235,${i/tr.length*.35})`;
+      rctx.lineWidth = 1;
+      rctx.beginPath(); rctx.moveTo(x1,y1); rctx.lineTo(x2,y2); rctx.stroke();
+    }
+  }
+
+  /* label rectangles already placed this frame, to avoid overlaps */
+  const placedLabels = [];
+  const rectsOverlap = (a,b) => !(a.x2<b.x1 || a.x1>b.x2 || a.y2<b.y1 || a.y1>b.y2);
+
+  for (const b of blips){
+    const [px, py] = px2(b);
+    if (px < -30 || px > W+30 || py < -30 || py > H+30) continue;
+    const ang = Math.atan2(b.x, b.y);
+    let diff = sweep - ((ang % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI);
+    diff = ((diff % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI);
+    const glow = Math.max(.3, 1 - diff/2.4);
+
+    if (b.moving){
+      const rot = (b.hdg != null ? b.hdg : (b.cog || 0)) * Math.PI/180;
+      rctx.save();
+      rctx.translate(px, py); rctx.rotate(rot);
+      rctx.fillStyle = `rgba(170,242,255,${glow})`;
+      const u = RDPR*5;
+      rctx.beginPath();
+      rctx.moveTo(0,-u*1.4); rctx.lineTo(u*.85,u); rctx.lineTo(0,u*.4); rctx.lineTo(-u*.85,u);
+      rctx.closePath(); rctx.fill();
+      rctx.restore();
+    } else {
+      rctx.fillStyle = `rgba(170,242,255,${glow*.7})`;
+      rctx.beginPath(); rctx.arc(px, py, 2.2*RDPR, 0, 7); rctx.fill();
+    }
+
+    /* labels only for underway ships — a moored harbour would be an unreadable tangle */
+    if (!b.moving) continue;
+    const tagsStr = (b.sog != null ? b.sog.toFixed(1) + ' kt' : '');
+
+    rctx.textAlign = 'left';
+    rctx.font = `${10*RDPR}px JetBrains Mono, monospace`;
+    const nameW = rctx.measureText(b.name).width;
+    rctx.font = `${8.5*RDPR}px JetBrains Mono, monospace`;
+    const tagsW = tagsStr ? rctx.measureText(tagsStr).width : 0;
+    const labelW = Math.max(nameW, tagsW);
+    const labelH = tagsStr ? 22*RDPR : 12*RDPR;
+
+    /* candidate positions spiraling outwards (several radii and both sides)
+       so labels spread apart in dense areas */
+    const cands = [];
+    for (const ry of [-6, 16, -26, 36, -46, 56, -66, 76]){
+      cands.push({x: 9*RDPR, y: ry*RDPR});
+      cands.push({x: -labelW - 9*RDPR, y: ry*RDPR});
+    }
+    let chosen = cands[0];
+    for (const c of cands){
+      const rect = {x1: px+c.x, y1: py+c.y-10*RDPR, x2: px+c.x+labelW, y2: py+c.y-10*RDPR+labelH};
+      if (!placedLabels.some(p => rectsOverlap(p, rect))){ chosen = c; placedLabels.push(rect); break; }
+    }
+
+    rctx.fillStyle = `rgba(225,248,255,${Math.min(1, glow*1.05)})`;
+    rctx.font = `${10*RDPR}px JetBrains Mono, monospace`;
+    rctx.fillText(b.name, px + chosen.x, py + chosen.y);
+    if (tagsStr){
+      rctx.fillStyle = `rgba(165,210,228,${glow*.95})`;
+      rctx.font = `${8.5*RDPR}px JetBrains Mono, monospace`;
+      rctx.fillText(tagsStr, px + chosen.x, py + chosen.y + 12*RDPR);
+    }
+  }
+  requestAnimationFrame(drawRadar);
+}
+requestAnimationFrame(drawRadar);
+
+/* clock: typewriter on first paint, cash-register roll on every following second */
+let clockStarted = false;
+const pad2 = v => String(Math.round(v)).padStart(2, '0');
+function tick(){
+  const now = new Date();
+  const hEl = document.getElementById('clk-h'), mEl = document.getElementById('clk-m'), sEl = document.getElementById('clk-s');
+  if (!clockStarted){
+    clockStarted = true;
+    typeText(hEl, pad2(now.getHours()));
+    typeText(mEl, pad2(now.getMinutes()));
+    typeText(sEl, pad2(now.getSeconds()));
+  } else {
+    animateNum(hEl, now.getHours(), pad2, 500);
+    animateNum(mEl, now.getMinutes(), pad2, 500);
+    animateNum(sEl, now.getSeconds(), pad2, 500);
+  }
+  typeText(document.getElementById('hud-date'), now.toLocaleDateString(CONFIG.locale,
+    {weekday:'long', day:'2-digit', month:'long'}));
+}
+tick();
+setInterval(tick, 1000);
+
+/* static texts: typed once on startup */
+typeText(document.getElementById('kicker-label'), CONFIG.kicker);
+typeText(document.getElementById('station-label'), CONFIG.stationLabel);
+
+async function refresh(){
+  try{
+    const d = await (await fetch(CONFIG.shipsUrl)).json();
+    setShips(d);
+  }catch(e){
+    typeText(document.getElementById('feed-line'), 'AIS FEED · NO SERVER');
+  }
+}
+refresh();
+setInterval(refresh, CONFIG.refreshMs);
+</script>
+</body>
+</html>

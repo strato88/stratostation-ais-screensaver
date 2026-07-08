@@ -1,0 +1,29 @@
+# AIS Radar Screensaver — systemd unit example
+#
+# 1. Adjust the paths and environment variables below
+# 2. sudo cp ais-radar.service /etc/systemd/system/
+# 3. sudo systemctl daemon-reload
+# 4. sudo systemctl enable --now ais-radar
+
+[Unit]
+Description=AIS Radar Screensaver server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to your clone of the repository:
+ExecStart=/usr/bin/python3 /home/pi/stratostation-ais-screensaver/server.py
+Environment=AIS_PORT=8096
+Environment=AISSTREAM_KEY=your_key_here
+Environment=AIS_LAT=38.8728
+Environment=AIS_LON=1.4015
+Environment=AIS_RANGE_NM=25
+Restart=on-failure
+RestartSec=5
+# Run as an unprivileged user:
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target
