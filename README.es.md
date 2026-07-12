@@ -54,6 +54,8 @@ pip install -r requirements.txt
    | `AIS_PRUNE_S` | `2400` | olvidar un barco tras estos segundos sin mensajes |
    | `AIS_TRAIL_MAX` | `60` | puntos máximos de estela por barco |
    | `AIS_TRAIL_MIN_GAP_S` | `30` | segundos mínimos entre dos puntos de estela |
+   | `AIS_DB_PATH` | *(sin definir)* | opcional — ruta a un fichero SQLite para persistir el estado de los barcos entre reinicios (ver abajo). Sin definir, funciona solo en memoria |
+   | `AIS_SNAPSHOT_S` | `60` | cada cuánto se guarda el snapshot SQLite, si `AIS_DB_PATH` está definida |
 
 3. **Arráncalo**:
 
@@ -75,6 +77,20 @@ JSON de polilíneas, cada una una lista de puntos `[lon, lat]`. El `coast.json` 
 (Ibiza y Formentera) se generó a partir de OpenStreetMap vía la API de Overpass, simplificado con
 el algoritmo Douglas-Peucker. Es totalmente opcional — sin `coast.json`, el servidor simplemente
 no publica esa ruta y el radar dibuja sin costa.
+
+## Opcional: persistir el estado entre reinicios
+
+Por defecto el servidor guarda el estado de los barcos solo en memoria — un reinicio empieza con
+el mapa vacío, y puede tardar 10-15 minutos en repoblarse (la cadencia de AIS varía: Clase A
+navegando cada 2-10 s, Clase B cada 30 s-3 min, datos estáticos como nombre/tipo solo cada ~6 min).
+
+Define `AIS_DB_PATH` con una ruta de fichero (p. ej. `AIS_DB_PATH=ships.db`) para volcar el
+estado completo de los barcos (incluidas las estelas) a SQLite cada `AIS_SNAPSHOT_S` segundos
+(60 por defecto), y también al recibir una parada limpia (`SIGTERM`, p. ej. `systemctl stop`).
+Al arrancar, el servidor restaura el último snapshot, descartando cualquier barco más viejo que
+`AIS_PRUNE_S`. En el peor caso (caída brusca) la pérdida máxima es de un intervalo de snapshot.
+Es opcional y está desactivado por defecto, así que un clon recién descargado se comporta igual
+que antes.
 
 ## Instalar el salvapantallas
 

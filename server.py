@@ -15,6 +15,9 @@ so use your own, not one already running elsewhere.
 import json
 import math
 import os
+import signal
+import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +28,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 PORT = int(os.environ.get("AIS_PORT", 8096))
 API_KEY = os.environ.get("AISSTREAM_KEY")
+
+# Optional persistence: set AIS_DB_PATH to a file path to snapshot ship state
+# to SQLite periodically (and on SIGTERM), so a restart doesn't start from an
+# empty map. Leave unset (default) to run purely in-memory, as before.
+DB_PATH = os.environ.get("AIS_DB_PATH", "")
+SNAPSHOT_S = int(os.environ.get("AIS_SNAPSHOT_S", 60))
 
 # Station center + radius — the aisstream.io bounding box is derived from
 # these so the subscribed area always matches what the radar draws.
@@ -43,6 +52,62 @@ BBOX = [[[LAT - _dlat, LON - _dlon], [LAT + _dlat, LON + _dlon]]]
 ships = {}   # mmsi -> dict
 lock = threading.Lock()
 stats = {"connected": False, "messages": 0, "started": time.time(), "last_msg": 0}
+
+
+# ---------- optional SQLite persistence (state survives restarts/reboots) ----------
+
+def _db_connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("CREATE TABLE IF NOT EXISTS ships ("
+                 "mmsi INTEGER PRIMARY KEY, last REAL NOT NULL, data TEXT NOT NULL)")
+    return conn
+
+
+def load_ships():
+    """Restore the last snapshot on startup, dropping ships already past PRUNE_S."""
+    if not DB_PATH or not os.path.exists(DB_PATH):
+        return
+    now = time.time()
+    conn = _db_connect()
+    try:
+        rows = conn.execute("SELECT mmsi, data FROM ships WHERE ? - last <= ?",
+                            (now, PRUNE_S)).fetchall()
+        with lock:
+            for mmsi, data in rows:
+                ships[mmsi] = json.loads(data)
+        print(f"[db] restored {len(rows)} ships from {DB_PATH}", flush=True)
+    except Exception as e:
+        print(f"[db] failed to restore snapshot: {e}", flush=True)
+    finally:
+        conn.close()
+
+
+def save_ships(conn):
+    """Write the full current state in one transaction (replace-all snapshot)."""
+    with lock:
+        rows = [(m, s["last"], json.dumps(s)) for m, s in ships.items()]
+    with conn:
+        conn.execute("DELETE FROM ships")
+        conn.executemany("INSERT INTO ships (mmsi, last, data) VALUES (?, ?, ?)", rows)
+
+
+def persist_loop():
+    conn = _db_connect()  # own connection: SQLite connections aren't thread-safe to share
+    while True:
+        time.sleep(SNAPSHOT_S)
+        try:
+            save_ships(conn)
+        except Exception as e:
+            print(f"[db] error saving snapshot: {e}", flush=True)
+
+
+def _on_sigterm(signum, frame):
+    try:
+        save_ships(_db_connect())
+        print("[db] final snapshot saved, exiting", flush=True)
+    except Exception as e:
+        print(f"[db] error saving final snapshot: {e}", flush=True)
+    sys.exit(0)
 
 
 def _merge_position(s, body, now):
@@ -195,8 +260,13 @@ def main():
             "note: aisstream.io allows only ONE active websocket connection per key, "
             "so use your OWN key, not one already running elsewhere."
         )
+    if DB_PATH:
+        load_ships()
+        signal.signal(signal.SIGTERM, _on_sigterm)
+        threading.Thread(target=persist_loop, daemon=True).start()
     threading.Thread(target=ws_consumer, daemon=True).start()
-    print(f"[http] listening on :{PORT} — station {LAT},{LON} · range {RANGE_NM} NM", flush=True)
+    db_note = f" · persisting to {DB_PATH}" if DB_PATH else ""
+    print(f"[http] listening on :{PORT} — station {LAT},{LON} · range {RANGE_NM} NM{db_note}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

@@ -51,6 +51,8 @@ pip install -r requirements.txt
    | `AIS_PRUNE_S` | `2400` | forget a ship after this many seconds of silence |
    | `AIS_TRAIL_MAX` | `60` | max trail points kept per ship |
    | `AIS_TRAIL_MIN_GAP_S` | `30` | minimum seconds between two trail points |
+   | `AIS_DB_PATH` | *(unset)* | optional — path to a SQLite file to persist ship state across restarts (see below). Runs purely in-memory if unset |
+   | `AIS_SNAPSHOT_S` | `60` | how often to write the SQLite snapshot, if `AIS_DB_PATH` is set |
 
 3. **Run it**:
 
@@ -72,6 +74,18 @@ a JSON array of polylines, each a list of `[lon, lat]` points. The live demo's o
 (Ibiza & Formentera) was built from OpenStreetMap via the Overpass API, simplified with the
 Douglas-Peucker algorithm. This is entirely optional — with no `coast.json` present, the server
 simply doesn't advertise that route and the radar draws without a coastline.
+
+## Optional: persist ship state across restarts
+
+By default the server keeps ship state purely in memory — a restart starts from an empty map,
+which can take 10–15 minutes to repopulate (AIS reporting rates vary: Class A underway every
+2–10 s, Class B every 30 s–3 min, static data like name/type only every ~6 min).
+
+Set `AIS_DB_PATH` to a file path (e.g. `AIS_DB_PATH=ships.db`) to snapshot the full ship state
+(including trails) to SQLite every `AIS_SNAPSHOT_S` seconds (default 60), and also on a clean
+shutdown (`SIGTERM`, e.g. `systemctl stop`). On startup the server restores the last snapshot,
+discarding any ship older than `AIS_PRUNE_S`. Worst case data loss after an unclean crash is one
+snapshot interval. This is opt-in and off by default so a fresh clone behaves exactly as before.
 
 ## Install the screensaver
 

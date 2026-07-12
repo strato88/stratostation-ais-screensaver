@@ -19,6 +19,8 @@ Environment=AISSTREAM_KEY=your_key_here
 Environment=AIS_LAT=38.8728
 Environment=AIS_LON=1.4015
 Environment=AIS_RANGE_NM=25
+# Optional: persist ship state to SQLite so a restart doesn't start empty.
+# Environment=AIS_DB_PATH=/home/pi/stratostation-ais-screensaver/ships.db
 Restart=on-failure
 RestartSec=5
 # Run as an unprivileged user:
