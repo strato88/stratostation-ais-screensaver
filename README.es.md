@@ -78,7 +78,15 @@ no publica esa ruta y el radar dibuja sin costa.
 
 ## Instalar el salvapantallas
 
-### macOS
+### macOS — instalación rápida (compilado, sin configuración)
+
+Descarga **[AIS-Radar-Screensaver-macOS.zip](https://github.com/strato88/stratostation-ais-screensaver/releases/download/macos-v1.0/AIS-Radar-Screensaver-macOS.zip)**,
+descomprime y haz doble clic en `AIS Radar.saver` — macOS ofrecerá instalarlo. Viene precargado
+con el feed en vivo de Ibiza, y puedes apuntarlo a tu propio servidor desde **Opciones**. Al no
+estar notarizado por Apple, si Gatekeeper lo bloquea ve a **Ajustes del Sistema → Privacidad y
+Seguridad** y pulsa **Abrir de todos modos**.
+
+### macOS — instalación manual (cargador genérico)
 
 1. Descarga [WebViewScreenSaver](https://github.com/liquidx/webviewscreensaver/releases)
    (gratuito, código abierto) y haz doble clic en `WebViewScreenSaver.saver` para instalarlo.

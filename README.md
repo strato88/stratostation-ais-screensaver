@@ -75,7 +75,15 @@ simply doesn't advertise that route and the radar draws without a coastline.
 
 ## Install the screensaver
 
-### macOS
+### macOS — quick install (prebuilt, no setup)
+
+Download **[AIS-Radar-Screensaver-macOS.zip](https://github.com/strato88/stratostation-ais-screensaver/releases/download/macos-v1.0/AIS-Radar-Screensaver-macOS.zip)**,
+unzip it and double-click `AIS Radar.saver` — macOS will offer to install it. It comes preloaded
+with the live Ibiza feed, and you can point it at your own server from **Options**. Since it is
+not notarized by Apple, if Gatekeeper blocks it go to **System Settings → Privacy & Security**
+and click **Open Anyway**.
+
+### macOS — manual setup (generic loader)
 
 1. Download [WebViewScreenSaver](https://github.com/liquidx/webviewscreensaver/releases)
    (free, open source) and double-click `WebViewScreenSaver.saver` to install.
