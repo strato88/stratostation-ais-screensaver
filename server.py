@@ -15,6 +15,7 @@ so use your own, not one already running elsewhere.
 import json
 import math
 import os
+import random
 import signal
 import sqlite3
 import sys
@@ -44,6 +45,12 @@ RANGE_NM = float(os.environ.get("AIS_RANGE_NM", 25))
 PRUNE_S = int(os.environ.get("AIS_PRUNE_S", 2400))          # forget ships idle this long
 TRAIL_MAX = int(os.environ.get("AIS_TRAIL_MAX", 60))        # max trail points per ship
 TRAIL_MIN_GAP_S = int(os.environ.get("AIS_TRAIL_MIN_GAP_S", 30))  # min seconds between trail points
+
+# Reconnect backoff. The ceiling is deliberately generous: aisstream.io outages
+# tend to last hours, and hammering it every couple of minutes just gets your
+# key rate-limited (HTTP 429) without reconnecting any sooner.
+BACKOFF_MIN_S = float(os.environ.get("AIS_BACKOFF_MIN_S", 5))
+BACKOFF_MAX_S = float(os.environ.get("AIS_BACKOFF_MAX_S", 900))
 
 _dlat = RANGE_NM / 60.0
 _dlon = RANGE_NM / 60.0 / math.cos(math.radians(LAT))
@@ -172,25 +179,42 @@ def handle_message(msg):
 
 
 def ws_consumer():
-    backoff = 5
+    backoff = BACKOFF_MIN_S
     while True:
+        ws = None
         try:
             ws = create_connection("wss://stream.aisstream.io/v0/stream", timeout=30)
             ws.send(json.dumps({"APIKey": API_KEY, "BoundingBoxes": BBOX}))
             with lock:
                 stats["connected"] = True
-            backoff = 5
+            # NOTE: the backoff is NOT reset here, on purpose. aisstream.io has a
+            # failure mode where it accepts the connection and the subscription and
+            # then sends nothing at all — no data, no error (a multi-day global
+            # outage of exactly this shape happened 2026-08-05). Resetting on
+            # connect would count every attempt as a success, so the backoff would
+            # never grow and you'd be stuck in a fixed recv-timeout + retry loop
+            # (~100 reconnects/hour, indefinitely) that eventually earns your key an
+            # HTTP 429. Only a real message proves the connection is any use.
             while True:
                 msg = json.loads(ws.recv())
                 if "error" in msg:
                     raise RuntimeError(f"API error: {msg['error']}")
                 handle_message(msg)
+                backoff = BACKOFF_MIN_S
         except Exception as e:
             with lock:
                 stats["connected"] = False
-            print(f"[ws] disconnected: {e} — retrying in {backoff}s", flush=True)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 120)
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+            # Jitter, so that every client running this doesn't reconnect in
+            # lockstep the moment aisstream.io comes back from an outage.
+            wait = backoff * (0.8 + 0.4 * random.random())
+            print(f"[ws] disconnected: {e} — retrying in {wait:.0f}s", flush=True)
+            time.sleep(wait)
+            backoff = min(backoff * 2, BACKOFF_MAX_S)
 
 
 # Explicit static-file whitelist — never serve the directory listing.

@@ -53,6 +53,8 @@ pip install -r requirements.txt
    | `AIS_TRAIL_MIN_GAP_S` | `30` | minimum seconds between two trail points |
    | `AIS_DB_PATH` | *(unset)* | optional — path to a SQLite file to persist ship state across restarts (see below). Runs purely in-memory if unset |
    | `AIS_SNAPSHOT_S` | `60` | how often to write the SQLite snapshot, if `AIS_DB_PATH` is set |
+   | `AIS_BACKOFF_MIN_S` | `5` | initial reconnect delay after the stream drops |
+   | `AIS_BACKOFF_MAX_S` | `900` | ceiling for the reconnect delay (see *Reconnecting* below) |
 
 3. **Run it**:
 
@@ -86,6 +88,26 @@ Set `AIS_DB_PATH` to a file path (e.g. `AIS_DB_PATH=ships.db`) to snapshot the f
 shutdown (`SIGTERM`, e.g. `systemctl stop`). On startup the server restores the last snapshot,
 discarding any ship older than `AIS_PRUNE_S`. Worst case data loss after an unclean crash is one
 snapshot interval. This is opt-in and off by default so a fresh clone behaves exactly as before.
+
+## Reconnecting, and why the backoff ceiling is high
+
+If the stream drops, the server reconnects with exponential backoff (`AIS_BACKOFF_MIN_S` →
+`AIS_BACKOFF_MAX_S`, doubling, ±20% jitter). The backoff is reset **only after a real AIS message
+arrives**, not when the websocket connects.
+
+That distinction matters more than it looks. aisstream.io has a failure mode where it accepts the
+connection *and* the subscription, then sends nothing at all — no data, no error — and a global
+outage of exactly this shape ran for days starting 2026-08-05. If you reset the backoff on connect,
+every attempt looks like a success, the delay never grows, and you settle into a fixed
+recv-timeout + retry loop of roughly 100 reconnects an hour for as long as the outage lasts. That
+gets your key rate-limited with an HTTP 429, which then keeps you disconnected *after* the upstream
+problem is fixed. The 15-minute ceiling costs you at most a few minutes of extra downtime on
+recovery and avoids all of that.
+
+If you're monitoring this server, watch `last_msg_age` from `/api/ships` — not the reconnect count.
+A dead stream can sit quietly below any reasonable "too many reconnects" threshold. Note that
+`last_msg_age` is `null` until the first message arrives, so treat `null` as "stale" (falling back
+to `uptime_s`), not as zero.
 
 ## Install the screensaver
 
