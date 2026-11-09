@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.db
+
+# Ajustes locales de Claude Code (permisos y preferencias de cada equipo)
+.claude/settings.local.json
